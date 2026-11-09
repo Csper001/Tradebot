@@ -19,19 +19,49 @@ with st.sidebar:
     slippage=st.slider('Slippage per side (basis points)',0,100,10,5)
     st.caption('Fixed research strategy: MA200 trend + MA20 pullback, next-open entry, 2×ATR stop, MA20 exit, 8% entry halt. Whole shares only.')
 
-st.subheader('1. Supply historical daily prices')
-st.write('Upload a CSV with **Date, Open, High, Low, Close, Volume** columns. At least 201 trading days required; 5+ years recommended. Use consistent, split-adjusted OHLC prices.')
-upload=st.file_uploader('Historical OHLCV CSV',type=['csv'])
-if upload is None:
-    st.info('Upload a historical-price CSV to run your first backtest. No live market data or fabricated sample returns are used.')
-    st.download_button('Download blank CSV template','Date,Open,High,Low,Close,Volume\n','tradebot_data_template.csv','text/csv')
-    st.stop()
-try:
+st.subheader('1. Choose a stock and load historical prices')
+mode=st.radio('Data source', ['Enter ticker (automatic download)', 'Upload CSV'], horizontal=True)
+if mode == 'Enter ticker (automatic download)':
+    ticker=st.text_input('Stock or ETF ticker',value='SPY',max_chars=15).strip().upper()
+    period=st.selectbox('Historical period', ['5y','10y','2y','1y'],index=0)
+    st.caption('Historical daily prices from Yahoo Finance via yfinance. This is third-party data, not guaranteed accurate or available. Adjusted OHLC uses auto_adjust=True; dividends are not modeled as cash payments.')
+    run=st.button('Run Backtest',type='primary')
+    if not run:
+        st.info('Enter a ticker and tap Run Backtest.')
+        st.stop()
+    if not ticker or not all(ch.isalnum() or ch in '.-' for ch in ticker):
+        st.error('Enter a valid ticker such as SPY, AAPL, or BRK-B.')
+        st.stop()
+    try:
+        import yfinance as yf
+        with st.spinner(f'Downloading {ticker} daily prices...'):
+            raw=yf.download(ticker,period=period,interval='1d',auto_adjust=True,progress=False,threads=False)
+        if raw is None or raw.empty:
+            raise ValueError('No historical data returned. Check the ticker or try again later.')
+        if isinstance(raw.columns,pd.MultiIndex):
+            raw.columns=raw.columns.get_level_values(0)
+        raw=raw.reset_index()
+        if 'Date' not in raw.columns and 'Datetime' in raw.columns:
+            raw=raw.rename(columns={'Datetime':'Date'})
+        data=raw[['Date','Open','High','Low','Close','Volume']].copy()
+        data['Date']=pd.to_datetime(data['Date']).dt.tz_localize(None)
+        st.success(f'Loaded {ticker}: {len(data):,} daily bars.')
+    except Exception as exc:
+        st.error(f'Could not retrieve prices: {exc}')
+        st.caption('Third-party market data may be temporarily unavailable. Try another ticker or the CSV option.')
+        st.stop()
+else:
+    upload=st.file_uploader('Historical OHLCV CSV',type=['csv'])
+    if upload is None:
+        st.info('Upload a CSV containing Date, Open, High, Low, Close, Volume.')
+        st.download_button('Download blank CSV template','Date,Open,High,Low,Close,Volume\n','tradebot_data_template.csv','text/csv')
+        st.stop()
     data=pd.read_csv(upload)
+try:
     cols={c.lower().strip():c for c in data.columns}
-    if 'date' not in cols or 'close' not in cols:
+    if not {'date','open','high','low','close','volume'}.issubset(cols):
         raise ValueError('CSV needs Date and Close columns, plus Open, High, Low, Volume.')
-    data[cols['date']]=pd.to_datetime(data[cols['date']],errors='raise')
+    data[cols['date']]=pd.to_datetime(data[cols['date']],errors='raise').dt.tz_localize(None)
     if data[cols['date']].duplicated().any():
         st.warning('Duplicate dates detected. Backtester retains one record per date.')
     st.write(f'**Loaded:** {len(data):,} rows · {data[cols["date"]].min().date()} through {data[cols["date"]].max().date()}')
